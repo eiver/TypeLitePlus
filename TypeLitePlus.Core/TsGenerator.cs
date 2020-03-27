@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
@@ -116,6 +117,40 @@ namespace TypeLitePlus
 
             return memberTypeName + (isCollection ? string.Concat(Enumerable.Repeat("[]", asCollection.Dimension)) : "");
         }
+
+        public string DefaultTypeFormatter(TsType tsType)
+        {
+            return GetFullyQualifiedTypeName(tsType) + (tsType.IsCollection() ? string.Concat(Enumerable.Repeat("[]", (tsType as TsCollection).Dimension)) : "");
+        }
+
+        /// <summary>
+        /// Converts C# dictionary into TypeScript Dictionary
+        /// </summary>
+        /// <param name="tsGenerator"></param>
+        public void RegisterDictionaryMemberFormatter()
+        {
+            SetMemberTypeFormatter((tsProperty, memberTypeName) => {
+                string genIDictName = typeof(IDictionary<,>).Name;
+                string iDictName = typeof(IDictionary).Name;
+                Type dictionaryInterface =
+                    tsProperty.PropertyType.Type.GetInterface(iDictName) ??
+                    tsProperty.PropertyType.Type.GetInterface(iDictName);
+
+                if (dictionaryInterface != null)
+                {
+                    TsType keyType = tsProperty.GenericArguments[0];
+                    TsType valueType = tsProperty.GenericArguments[1];
+
+                    string toReturn = "{ [ key: " + DefaultTypeFormatter(keyType) + " ]: " + DefaultTypeFormatter(valueType) + " }";
+                    return toReturn;
+                }
+                else
+                {
+                    return DefaultMemberTypeFormatter(tsProperty, memberTypeName);
+                }
+            });
+        }
+
 
         /// <summary>
         /// Registers the formatter for the specific TsType
@@ -240,7 +275,11 @@ namespace TypeLitePlus
                 {
                     this.AppendReference(reference, sb);
                 }
-                sb.AppendLine();
+
+                if (_references.Any())
+                {
+                    sb.AppendLine();
+                }
             }
 
             // We can't just sort by the module name, because a formatter can jump in and change it so
@@ -264,24 +303,50 @@ namespace TypeLitePlus
             sb.AppendLine();
         }
 
+        protected virtual List<TsClass> SortByDependency(List<TsClass> tsClasses)
+        {
+            List<TsClass> sorted = new List<TsClass>();
+            Queue<TsClass> queue = new Queue<TsClass>(tsClasses);
+
+            while(queue.Count > 0)
+            {
+                TsClass processedClass = queue.Dequeue();
+                if(processedClass.BaseType == null)
+                {
+                    if(!sorted.Contains(processedClass))
+                    {
+                        sorted.Add(processedClass);
+                    }
+                }
+                else
+                {
+                    TsClass baseClass = tsClasses.Single(c => c.Type.FullName == processedClass.BaseType.Type.FullName);
+                    if(sorted.Contains(baseClass))
+                    {
+                        if (!sorted.Contains(processedClass))
+                        {
+                            sorted.Add(processedClass);
+                        }
+                    }
+                    else
+                    {
+                        queue.Enqueue(processedClass);
+                    }
+                }
+            }
+
+            return sorted;
+        }
+
         protected virtual void AppendModule(TsModule module, ScriptBuilder sb, TsGeneratorOutput generatorOutput)
         {
-            var classes = module.Classes.Where(c => !_typeConvertors.IsConvertorRegistered(c.Type) && !c.IsIgnored).OrderBy(c => GetTypeName(c)).ToList();
-            var baseClasses = classes
-                .Where(c => c.BaseType != null)
-                .Select(c => c.BaseType.Type.FullName)
-                .Distinct()
-                .OrderBy(c => c)
-                .ToList();
+            List<TsClass> classesByName = module.Classes.Where(c => !_typeConvertors.IsConvertorRegistered(c.Type) && !c.IsIgnored).OrderBy(c => GetTypeName(c)).ToList();
+            List<TsClass> classes = SortByDependency(classesByName);
+
             var enums = module.Enums.Where(e => !_typeConvertors.IsConvertorRegistered(e.Type) && !e.IsIgnored).OrderBy(e => GetTypeName(e)).ToList();
             if ((generatorOutput == TsGeneratorOutput.Enums && enums.Count == 0) ||
                 (generatorOutput == TsGeneratorOutput.Properties && classes.Count == 0) ||
                 (enums.Count == 0 && classes.Count == 0))
-            {
-                return;
-            }
-
-            if (generatorOutput == TsGeneratorOutput.Properties && !classes.Any(c => c.Fields.Any() || c.Properties.Any()))
             {
                 return;
             }
@@ -303,52 +368,50 @@ namespace TypeLitePlus
                 }
 
                 sb.AppendLine($"{(Mode == TsGenerationModes.Definitions ? "namespace" : "module")} {moduleName} {{");
-            }
 
-            using (sb.IncreaseIndentation())
-            {
-                if ((generatorOutput & TsGeneratorOutput.Enums) == TsGeneratorOutput.Enums)
+                using (sb.IncreaseIndentation())
                 {
-                    foreach (var enumModel in enums)
-                    {
-                        this.AppendEnumDefinition(enumModel, sb, generatorOutput);
-                    }
+                    GenerateModuleContent(sb, generatorOutput, classes, enums);
                 }
 
-                if (((generatorOutput & TsGeneratorOutput.Properties) == TsGeneratorOutput.Properties)
-                    || (generatorOutput & TsGeneratorOutput.Fields) == TsGeneratorOutput.Fields)
-                {
-                    foreach (var baseClassModel in classes.Where(c => baseClasses.Contains(c.Type.FullName)))
-                    {
-                        this.AppendClassDefinition(baseClassModel, sb, generatorOutput);
-                    }
-                }
-
-                if (((generatorOutput & TsGeneratorOutput.Properties) == TsGeneratorOutput.Properties)
-                    || (generatorOutput & TsGeneratorOutput.Fields) == TsGeneratorOutput.Fields)
-                {
-                    foreach (var classModel in classes.Where(c => !baseClasses.Contains(c.Type.FullName)))
-                    {
-                        this.AppendClassDefinition(classModel, sb, generatorOutput);
-                    }
-                }
-
-                if ((generatorOutput & TsGeneratorOutput.Constants) == TsGeneratorOutput.Constants)
-                {
-                    foreach (var classModel in classes)
-                    {
-                        if (classModel.IsIgnored)
-                        {
-                            continue;
-                        }
-
-                        this.AppendConstantModule(classModel, sb);
-                    }
-                }
-            }
-            if (generateModuleHeader)
-            {
                 sb.AppendLine("}");
+            }
+            else
+            {
+                GenerateModuleContent(sb, generatorOutput, classes, enums);
+            }
+        }
+
+        private void GenerateModuleContent(ScriptBuilder sb, TsGeneratorOutput generatorOutput, List<TsClass> classes, List<TsEnum> enums)
+        {
+            if ((generatorOutput & TsGeneratorOutput.Enums) == TsGeneratorOutput.Enums)
+            {
+                foreach (var enumModel in enums)
+                {
+                    this.AppendEnumDefinition(enumModel, sb, generatorOutput);
+                }
+            }
+
+            if (((generatorOutput & TsGeneratorOutput.Properties) == TsGeneratorOutput.Properties)
+                || (generatorOutput & TsGeneratorOutput.Fields) == TsGeneratorOutput.Fields)
+            {
+                foreach (var classModel in classes)
+                {
+                    this.AppendClassDefinition(classModel, sb, generatorOutput);
+                }
+            }
+
+            if ((generatorOutput & TsGeneratorOutput.Constants) == TsGeneratorOutput.Constants)
+            {
+                foreach (var classModel in classes)
+                {
+                    if (classModel.IsIgnored)
+                    {
+                        continue;
+                    }
+
+                    this.AppendConstantModule(classModel, sb);
+                }
             }
         }
 

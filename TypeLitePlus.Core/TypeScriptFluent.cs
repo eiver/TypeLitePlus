@@ -248,6 +248,32 @@ namespace TypeLitePlus
         }
 
         /// <summary>
+        /// Converts C# dictionary into TypeScript Dictionary (fluent api)
+        /// </summary>
+        /// <param name="typeScriptFluent"></param>
+        /// <returns></returns>
+        public TypeScriptFluent WithDictionaryMemberFormatter()
+        {
+            ScriptGenerator.RegisterDictionaryMemberFormatter();
+            return this;
+        }
+
+        public TypeScriptFluent WithModule(string moduleName)
+        {
+            TsModule module = new TsModule(moduleName);
+            foreach (TsClass tsClass in ModelBuilder.Classes.Values)
+            {
+                tsClass.Module = module;
+            }
+
+            foreach (TsEnum tsEnum in ModelBuilder.Enums.Values)
+            {
+                tsEnum.Module = module;
+            }
+            return this;
+        }
+
+        /// <summary>
         /// Returns a string that represents the current object.
         /// </summary>
         /// <returns>TypeScript definition for types included in this model builder.</returns>

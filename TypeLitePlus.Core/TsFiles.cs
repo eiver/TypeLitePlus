@@ -10,7 +10,7 @@ namespace TypeLitePlus
     public static class TsFiles
     {
 
-        public static Regex regex = new Regex("declare module (\\S+) {(.*?})\r\n}", RegexOptions.Singleline | RegexOptions.CultureInvariant);
+        public static Regex regex = new Regex("export module (\\S+) {(.*?})\r\n}", RegexOptions.Singleline | RegexOptions.CultureInvariant);
 
         /// <summary>
         /// Splits the current TypeScriptFluent output into several files, one per module
